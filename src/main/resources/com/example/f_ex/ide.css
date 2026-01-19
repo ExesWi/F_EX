@@ -1,0 +1,70 @@
+/* Light theme (default) */
+.kw { -fx-fill: #c586c0; -fx-font-weight: bold; }
+.paren { -fx-fill: #d4d4d4; }
+.brace { -fx-fill: #d4d4d4; }
+.bracket { -fx-fill: #d4d4d4; }
+.semi { -fx-fill: #d4d4d4; }
+.str { -fx-fill: #ce9178; }
+.chr { -fx-fill: #ce9178; }
+.cmt { -fx-fill: #6a9955; }
+
+/* Dark theme */
+.root.dark-theme {
+    -fx-base: #1e1e1e;
+    -fx-background: #252526;
+    -fx-control-inner-background: #1e1e1e;
+    -fx-text-base-color: #d4d4d4;
+}
+
+.root.dark-theme .kw { -fx-fill: #c586c0; -fx-font-weight: bold; }
+.root.dark-theme .paren { -fx-fill: #d4d4d4; }
+.root.dark-theme .brace { -fx-fill: #d4d4d4; }
+.root.dark-theme .bracket { -fx-fill: #d4d4d4; }
+.root.dark-theme .semi { -fx-fill: #d4d4d4; }
+.root.dark-theme .str { -fx-fill: #ce9178; }
+.root.dark-theme .chr { -fx-fill: #ce9178; }
+.root.dark-theme .cmt { -fx-fill: #6a9955; }
+
+.root.dark-theme .text-area,
+.root.dark-theme .text-area .content {
+    -fx-background-color: #1e1e1e;
+    -fx-text-fill: #d4d4d4;
+}
+
+.root.dark-theme .tree-view {
+    -fx-background-color: #252526;
+}
+
+.root.dark-theme .tree-cell {
+    -fx-background-color: #252526;
+    -fx-text-fill: #d4d4d4;
+}
+
+.root.dark-theme .tree-cell:selected {
+    -fx-background-color: #094771;
+}
+
+.root.dark-theme .tab-pane {
+    -fx-background-color: #1e1e1e;
+}
+
+.root.dark-theme .tab {
+    -fx-background-color: #2d2d30;
+    -fx-text-fill: #d4d4d4;
+}
+
+.root.dark-theme .tab:selected {
+    -fx-background-color: #1e1e1e;
+}
+
+.root.dark-theme .menu-bar {
+    -fx-background-color: #2d2d30;
+}
+
+.root.dark-theme .tool-bar {
+    -fx-background-color: #2d2d30;
+}
+
+.root.dark-theme .label {
+    -fx-text-fill: #d4d4d4;
+}

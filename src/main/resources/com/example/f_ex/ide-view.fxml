@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+
+<BorderPane xmlns:fx="http://javafx.com/fxml/1"
+            xmlns="http://javafx.com/javafx/17.0.12"
+            fx:controller="com.example.f_ex.IdeController"
+            prefWidth="1100.0" prefHeight="750.0">
+    <top>
+        <VBox>
+            <MenuBar>
+                <Menu text="Project">
+                    <MenuItem text="New Java Project..." onAction="#onNewProject" accelerator="Ctrl+Alt+N"/>
+                    <MenuItem text="Open Project..." onAction="#onOpenFolder" accelerator="Ctrl+Shift+O"/>
+                    <MenuItem text="New Java Class..." onAction="#onNewJavaClass" accelerator="Ctrl+N"/>
+                    <SeparatorMenuItem/>
+                    <MenuItem text="Run Project" onAction="#onRunProject" accelerator="F5"/>
+                    <MenuItem text="Build Project" onAction="#onGradleBuild" accelerator="Ctrl+B"/>
+                </Menu>
+                <Menu text="File">
+                    <MenuItem text="Open Folder..." onAction="#onOpenFolder" accelerator="Ctrl+Shift+O"/>
+                    <MenuItem text="Open File..." onAction="#onOpenFile" accelerator="Ctrl+O"/>
+                    <SeparatorMenuItem/>
+                    <MenuItem text="Save" onAction="#onSave" accelerator="Ctrl+S"/>
+                    <MenuItem text="Save As..." onAction="#onSaveAs" accelerator="Ctrl+Shift+S"/>
+                    <SeparatorMenuItem/>
+                    <MenuItem text="Close Tab" onAction="#onCloseTab" accelerator="Ctrl+W"/>
+                    <MenuItem text="Close All Tabs" onAction="#onCloseAllTabs"/>
+                </Menu>
+                <Menu text="Edit">
+                    <MenuItem text="Find..." onAction="#onFind" accelerator="Ctrl+F"/>
+                    <MenuItem text="Replace..." onAction="#onReplace" accelerator="Ctrl+H"/>
+                    <SeparatorMenuItem/>
+                    <MenuItem text="Select All" onAction="#onSelectAll" accelerator="Ctrl+A"/>
+                </Menu>
+                <Menu text="View">
+                    <MenuItem text="Refresh Project Tree" onAction="#onRefreshTree"/>
+                    <MenuItem text="Toggle Console" onAction="#onToggleConsole"/>
+                    <SeparatorMenuItem/>
+                    <MenuItem text="Toggle Theme" onAction="#onToggleTheme"/>
+                </Menu>
+                <Menu text="Search">
+                    <MenuItem text="Find in Files..." onAction="#onFindInFiles" accelerator="Ctrl+Shift+F"/>
+                </Menu>
+                <Menu text="Git">
+                    <MenuItem text="Clone from GitHub..." onAction="#onCloneFromGitHub"/>
+                </Menu>
+                <Menu text="Settings">
+                    <MenuItem text="Preferences..." onAction="#onSettings"/>
+                </Menu>
+                <Menu text="Build">
+                    <MenuItem text="Gradle: build" onAction="#onGradleBuild" accelerator="Ctrl+B"/>
+                    <MenuItem text="Gradle: run" onAction="#onGradleRun" accelerator="Ctrl+R"/>
+                    <MenuItem text="Gradle: test" onAction="#onGradleTest"/>
+                    <MenuItem text="Gradle: clean" onAction="#onGradleClean"/>
+                </Menu>
+            </MenuBar>
+            <ToolBar>
+            <Button text="Open Folder" onAction="#onOpenFolder"/>
+            <Separator orientation="VERTICAL"/>
+            <Button text="Open File" onAction="#onOpenFile"/>
+            <Button text="Save" onAction="#onSave"/>
+            <Button text="Save As" onAction="#onSaveAs"/>
+            <Separator orientation="VERTICAL"/>
+            <Button text="New Project" onAction="#onNewProject"/>
+            <Button text="Gradle: build" onAction="#onGradleBuild"/>
+            <ComboBox fx:id="runTargetComboBox" promptText="Select to run..." onAction="#onRunSelected" prefWidth="200"/>
+            <Button text="Run" onAction="#onRunSelected"/>
+            <Button text="Gradle: test" onAction="#onGradleTest"/>
+            <Separator orientation="VERTICAL"/>
+            <Button text="Clear Console" onAction="#onClearConsole"/>
+            <Pane HBox.hgrow="ALWAYS"/>
+            <Label text="Root:"/>
+            <Label fx:id="rootLabel" text="(not set)"/>
+        </ToolBar>
+        </VBox>
+    </top>
+
+    <center>
+        <SplitPane dividerPositions="0.28">
+            <VBox>
+                <Label text="Project" style="-fx-padding: 6 8 6 8; -fx-font-weight: bold;"/>
+                <TreeView fx:id="projectTree" VBox.vgrow="ALWAYS"/>
+            </VBox>
+
+            <BorderPane>
+                <top>
+                    <Label text="Editor" style="-fx-padding: 6 8 6 8; -fx-font-weight: bold;"/>
+                </top>
+                <center>
+                    <TabPane fx:id="editorTabs" tabClosingPolicy="ALL_TABS"/>
+                </center>
+            </BorderPane>
+        </SplitPane>
+    </center>
+
+    <bottom>
+        <VBox>
+            <VBox>
+                <Label text="Console" style="-fx-padding: 6 8 6 8; -fx-font-weight: bold;"/>
+                <TextArea fx:id="consoleArea" editable="true" wrapText="true" prefRowCount="8" VBox.vgrow="ALWAYS" onKeyPressed="#onConsoleKeyPressed"/>
+            </VBox>
+            <BorderPane style="-fx-border-color: lightgray; -fx-border-width: 1 0 0 0;">
+                <left>
+                    <Label fx:id="statusLabel" text="Ready" style="-fx-padding: 4 8 4 8;"/>
+                </left>
+                <right>
+                    <Label fx:id="cursorPositionLabel" text="" style="-fx-padding: 4 8 4 8;"/>
+                </right>
+            </BorderPane>
+        </VBox>
+    </bottom>
+</BorderPane>
+
