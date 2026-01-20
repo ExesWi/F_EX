@@ -68,3 +68,12 @@
 .root.dark-theme .label {
     -fx-text-fill: #d4d4d4;
 }
+
+/* Problems highlighting in editor */
+.errLine {
+    -rtfx-background-color: rgba(255, 0, 0, 0.12);
+}
+
+.warnLine {
+    -rtfx-background-color: rgba(255, 215, 0, 0.12);
+}

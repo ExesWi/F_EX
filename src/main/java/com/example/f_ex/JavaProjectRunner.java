@@ -66,7 +66,7 @@ public class JavaProjectRunner {
             logCallback.accept("Attempting to compile anyway (may fail if JavaFX not found)...");
         }
         
-        compileAndRun(projectRoot, sourceRoot, mainClass, usesJavaFX);
+        compileAndRun(projectRoot, sourceRoot, mainClass, usesJavaFX, false);
     }
     
     public void runFile(Path projectRoot, Path javaFile) {
@@ -79,7 +79,13 @@ public class JavaProjectRunner {
             logCallback.accept("Attempting to compile anyway (may fail if JavaFX not found)...");
         }
         
-        compileAndRun(projectRoot, sourceRoot, javaFile, usesJavaFX);
+        compileAndRun(projectRoot, sourceRoot, javaFile, usesJavaFX, false);
+    }
+
+    public void debugFile(Path projectRoot, Path javaFile) {
+        Path sourceRoot = findSourceRoot(projectRoot, javaFile);
+        boolean usesJavaFX = checkUsesJavaFX(projectRoot, sourceRoot);
+        compileAndRun(projectRoot, sourceRoot, javaFile, usesJavaFX, true);
     }
     
     private static boolean checkUsesJavaFX(Path projectRoot, Path sourceRoot) {
@@ -139,7 +145,7 @@ public class JavaProjectRunner {
         return mainClass.getParent();
     }
     
-    private void compileAndRun(Path projectRoot, Path sourceRoot, Path mainClass, boolean usesJavaFX) {
+    private void compileAndRun(Path projectRoot, Path sourceRoot, Path mainClass, boolean usesJavaFX, boolean debug) {
         Path buildDir = projectRoot.resolve("build");
         Path classesDir = buildDir.resolve("classes");
         
@@ -209,6 +215,11 @@ public class JavaProjectRunner {
             // Устанавливаем UTF-8 кодировку для правильного отображения русских букв
             runCmd.add("-Dfile.encoding=UTF-8");
             runCmd.add("-Dconsole.encoding=UTF-8");
+
+            if (debug) {
+                // Windows + Java 17: address=*:5005 бывает не даёт suspend как ожидается
+                runCmd.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005");
+            }
             
             runCmd.add("-cp");
             runCmd.add(classesDir.toString());
@@ -227,6 +238,9 @@ public class JavaProjectRunner {
             runCmd.add(className);
             
             logCallback.accept("$ " + String.join(" ", runCmd));
+            if (debug) {
+                logCallback.accept("[DEBUG] Waiting for debugger on port 5005 (suspend=y)");
+            }
             runCommand(runCmd, projectRoot, null, processCallback);
         });
     }

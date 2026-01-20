@@ -40,7 +40,7 @@ public class IntelliJProjectRunner {
         Path sourceRoot = findSourceRoot(projectRoot, mainClass);
         boolean usesJavaFX = checkUsesJavaFX(projectRoot, sourceRoot);
         
-        compileAndRun(projectRoot, sourceRoot, mainClass, usesJavaFX, libraries);
+        compileAndRun(projectRoot, sourceRoot, mainClass, usesJavaFX, libraries, false);
     }
     
     public void runFile(Path projectRoot, Path javaFile) {
@@ -50,7 +50,14 @@ public class IntelliJProjectRunner {
         Path sourceRoot = findSourceRoot(projectRoot, javaFile);
         boolean usesJavaFX = checkUsesJavaFX(projectRoot, sourceRoot);
         
-        compileAndRun(projectRoot, sourceRoot, javaFile, usesJavaFX, libraries);
+        compileAndRun(projectRoot, sourceRoot, javaFile, usesJavaFX, libraries, false);
+    }
+
+    public void debugFile(Path projectRoot, Path javaFile) {
+        List<Path> libraries = findLibraries(projectRoot);
+        Path sourceRoot = findSourceRoot(projectRoot, javaFile);
+        boolean usesJavaFX = checkUsesJavaFX(projectRoot, sourceRoot);
+        compileAndRun(projectRoot, sourceRoot, javaFile, usesJavaFX, libraries, true);
     }
     
     private List<Path> findLibraries(Path projectRoot) {
@@ -181,8 +188,8 @@ public class IntelliJProjectRunner {
         return mainClass.getParent();
     }
     
-    private void compileAndRun(Path projectRoot, Path sourceRoot, Path mainClass, 
-                               boolean usesJavaFX, List<Path> libraries) {
+    private void compileAndRun(Path projectRoot, Path sourceRoot, Path mainClass,
+                               boolean usesJavaFX, List<Path> libraries, boolean debug) {
         Path buildDir = projectRoot.resolve("build");
         Path classesDir = buildDir.resolve("classes");
         
@@ -264,6 +271,10 @@ public class IntelliJProjectRunner {
             // Устанавливаем UTF-8 кодировку для правильного отображения русских букв
             runCmd.add("-Dfile.encoding=UTF-8");
             runCmd.add("-Dconsole.encoding=UTF-8");
+
+            if (debug) {
+                runCmd.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005");
+            }
             
             runCmd.add("-cp");
             runCmd.add(classpathStr);
@@ -282,6 +293,9 @@ public class IntelliJProjectRunner {
             runCmd.add(className);
             
             logCallback.accept("$ " + String.join(" ", runCmd));
+            if (debug) {
+                logCallback.accept("[DEBUG] Waiting for debugger on port 5005 (suspend=y)");
+            }
             runCommand(runCmd, projectRoot, null, processCallback);
         });
     }

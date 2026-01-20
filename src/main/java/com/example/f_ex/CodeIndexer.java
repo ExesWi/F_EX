@@ -56,31 +56,27 @@ public class CodeIndexer {
             String content = Files.readString(file, StandardCharsets.UTF_8);
             String packageName = extractPackage(content);
             
-            // Индексируем классы
             Matcher classMatcher = CLASS_PATTERN.matcher(content);
             while (classMatcher.find()) {
                 String className = classMatcher.group(1);
-                addToIndex(className, CodeElementType.CLASS, file, packageName);
+                addToIndex(className, CodeElementType.CLASS, file, packageName, lineAt(content, classMatcher.start(1)));
             }
             
-            // Индексируем интерфейсы
             Matcher interfaceMatcher = INTERFACE_PATTERN.matcher(content);
             while (interfaceMatcher.find()) {
                 String interfaceName = interfaceMatcher.group(1);
-                addToIndex(interfaceName, CodeElementType.INTERFACE, file, packageName);
+                addToIndex(interfaceName, CodeElementType.INTERFACE, file, packageName, lineAt(content, interfaceMatcher.start(1)));
             }
             
-            // Индексируем методы (упрощенная версия)
             Matcher methodMatcher = METHOD_PATTERN.matcher(content);
             while (methodMatcher.find()) {
                 String methodName = methodMatcher.group(methodMatcher.groupCount());
                 if (methodName != null && !methodName.equals("class") && !methodName.equals("interface")) {
-                    addToIndex(methodName, CodeElementType.METHOD, file, packageName);
+                    addToIndex(methodName, CodeElementType.METHOD, file, packageName, lineAt(content, methodMatcher.start(methodMatcher.groupCount())));
                 }
             }
             
         } catch (IOException e) {
-            // Игнорируем ошибки чтения
         }
     }
     
@@ -93,9 +89,20 @@ public class CodeIndexer {
         return "";
     }
     
-    private void addToIndex(String name, CodeElementType type, Path file, String packageName) {
+    private void addToIndex(String name, CodeElementType type, Path file, String packageName, int line) {
         index.computeIfAbsent(name.toLowerCase(), k -> new ArrayList<>())
-                .add(new CodeElement(name, type, file, packageName));
+                .add(new CodeElement(name, type, file, packageName, line));
+    }
+
+    private static int lineAt(String s, int offset) {
+        if (s == null || s.isEmpty()) return 1;
+        if (offset < 0) return 1;
+        int line = 1;
+        int max = Math.min(offset, s.length());
+        for (int i = 0; i < max; i++) {
+            if (s.charAt(i) == '\n') line++;
+        }
+        return line;
     }
     
     public List<CodeElement> findCompletions(String prefix) {
@@ -138,18 +145,21 @@ public class CodeIndexer {
         private final CodeElementType type;
         private final Path file;
         private final String packageName;
+        private final int line;
         
-        public CodeElement(String name, CodeElementType type, Path file, String packageName) {
+        public CodeElement(String name, CodeElementType type, Path file, String packageName, int line) {
             this.name = name;
             this.type = type;
             this.file = file;
             this.packageName = packageName;
+            this.line = line;
         }
         
         public String getName() { return name; }
         public CodeElementType getType() { return type; }
         public Path getFile() { return file; }
         public String getPackageName() { return packageName; }
+        public int getLine() { return line; }
         
         public String getDisplayName() {
             String typeIcon = switch (type) {

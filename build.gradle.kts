@@ -4,6 +4,7 @@ plugins {
     id("org.javamodularity.moduleplugin") version "1.8.15"
     id("org.openjfx.javafxplugin") version "0.0.13"
     id("org.beryx.jlink") version "2.25.0"
+    id("com.github.johnrengelman.shadow") version "8.1.1"
 }
 
 group = "com.example"
@@ -27,7 +28,7 @@ tasks.withType<JavaCompile> {
 
 application {
     mainModule.set("com.example.f_ex")
-    mainClass.set("com.example.f_ex.HelloApplication")
+    mainClass.set("com.example.f_ex.Launcher")
 }
 
 javafx {
@@ -61,4 +62,14 @@ jlink {
     launcher {
         name = "app"
     }
+}
+
+tasks.shadowJar {
+    archiveClassifier.set("all")
+    mergeServiceFiles()
+    manifest {
+        attributes(mapOf("Main-Class" to "com.example.f_ex.Launcher"))
+    }
+    configurations = listOf(project.configurations.runtimeClasspath.get())
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }

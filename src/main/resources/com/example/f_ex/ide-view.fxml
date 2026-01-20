@@ -3,76 +3,98 @@
 <?import javafx.scene.control.*?>
 <?import javafx.scene.layout.*?>
 
-<BorderPane xmlns:fx="http://javafx.com/fxml/1"
-            xmlns="http://javafx.com/javafx/17.0.12"
-            fx:controller="com.example.f_ex.IdeController"
-            prefWidth="1100.0" prefHeight="750.0">
+<BorderPane prefHeight="750.0" prefWidth="1100.0" xmlns="http://javafx.com/javafx/17.0.12" xmlns:fx="http://javafx.com/fxml/1" fx:controller="com.example.f_ex.IdeController">
     <top>
         <VBox>
             <MenuBar>
                 <Menu text="Project">
-                    <MenuItem text="New Java Project..." onAction="#onNewProject" accelerator="Ctrl+Alt+N"/>
-                    <MenuItem text="Open Project..." onAction="#onOpenFolder" accelerator="Ctrl+Shift+O"/>
-                    <MenuItem text="New Java Class..." onAction="#onNewJavaClass" accelerator="Ctrl+N"/>
-                    <SeparatorMenuItem/>
-                    <MenuItem text="Run Project" onAction="#onRunProject" accelerator="F5"/>
-                    <MenuItem text="Build Project" onAction="#onGradleBuild" accelerator="Ctrl+B"/>
+                    <MenuItem accelerator="Ctrl+Alt+N" onAction="#onNewProject" text="New Java Project..." />
+                    <MenuItem accelerator="Ctrl+Shift+O" onAction="#onOpenFolder" text="Open Project..." />
+                    <MenuItem accelerator="Ctrl+N" onAction="#onNewJavaClass" text="New Java Class..." />
+                    <SeparatorMenuItem />
+                    <MenuItem accelerator="F5" onAction="#onRunProject" text="Run Project" />
+                    <MenuItem accelerator="Shift+F5" onAction="#onDebugProject" text="Debug Project" />
+                    <MenuItem accelerator="Ctrl+B" onAction="#onGradleBuild" text="Build Project" />
                 </Menu>
                 <Menu text="File">
-                    <MenuItem text="Open Folder..." onAction="#onOpenFolder" accelerator="Ctrl+Shift+O"/>
-                    <MenuItem text="Open File..." onAction="#onOpenFile" accelerator="Ctrl+O"/>
-                    <SeparatorMenuItem/>
-                    <MenuItem text="Save" onAction="#onSave" accelerator="Ctrl+S"/>
-                    <MenuItem text="Save As..." onAction="#onSaveAs" accelerator="Ctrl+Shift+S"/>
-                    <SeparatorMenuItem/>
-                    <MenuItem text="Close Tab" onAction="#onCloseTab" accelerator="Ctrl+W"/>
-                    <MenuItem text="Close All Tabs" onAction="#onCloseAllTabs"/>
+                    <MenuItem accelerator="Ctrl+Shift+O" onAction="#onOpenFolder" text="Open Folder..." />
+                    <MenuItem accelerator="Ctrl+O" onAction="#onOpenFile" text="Open File..." />
+                    <SeparatorMenuItem />
+                    <MenuItem accelerator="Ctrl+S" onAction="#onSave" text="Save" />
+                    <MenuItem accelerator="Ctrl+Shift+S" onAction="#onSaveAs" text="Save As..." />
+                    <SeparatorMenuItem />
+                    <MenuItem accelerator="F2" onAction="#onRenameFile" text="Rename File..." />
+                    <SeparatorMenuItem />
+                    <MenuItem accelerator="Ctrl+W" onAction="#onCloseTab" text="Close Tab" />
+                    <MenuItem onAction="#onCloseAllTabs" text="Close All Tabs" />
                 </Menu>
                 <Menu text="Edit">
-                    <MenuItem text="Find..." onAction="#onFind" accelerator="Ctrl+F"/>
-                    <MenuItem text="Replace..." onAction="#onReplace" accelerator="Ctrl+H"/>
-                    <SeparatorMenuItem/>
-                    <MenuItem text="Select All" onAction="#onSelectAll" accelerator="Ctrl+A"/>
+                    <MenuItem accelerator="Ctrl+Shift+A" onAction="#onActionSearch" text="Action Search..." />
+                    <MenuItem accelerator="Ctrl+F" onAction="#onFind" text="Find..." />
+                    <MenuItem accelerator="Ctrl+H" onAction="#onReplace" text="Replace..." />
+                    <SeparatorMenuItem />
+                    <MenuItem accelerator="Shift+F6" onAction="#onRename" text="Rename..." />
+                    <MenuItem accelerator="Ctrl+Alt+Z" onAction="#onUndoRefactor" text="Undo Refactor" />
+                    <MenuItem accelerator="Ctrl+A" onAction="#onSelectAll" text="Select All" />
+                </Menu>
+                <Menu text="Navigate">
+                    <MenuItem accelerator="Ctrl+Shift+N" onAction="#onGoToClass" text="Go to Class..." />
+                    <MenuItem accelerator="Ctrl+Alt+S" onAction="#onGoToSymbol" text="Go to Symbol..." />
+                    <MenuItem accelerator="Ctrl+Shift+O" onAction="#onGoToFile" text="Go to File..." />
+                    <MenuItem accelerator="Ctrl+E" onAction="#onRecentFiles" text="Recent Files..." />
+                    <MenuItem accelerator="Alt+F7" onAction="#onFindUsages" text="Find Usages..." />
                 </Menu>
                 <Menu text="View">
-                    <MenuItem text="Refresh Project Tree" onAction="#onRefreshTree"/>
-                    <MenuItem text="Toggle Console" onAction="#onToggleConsole"/>
-                    <SeparatorMenuItem/>
-                    <MenuItem text="Toggle Theme" onAction="#onToggleTheme"/>
+                    <MenuItem onAction="#onRefreshTree" text="Refresh Project Tree" />
+                    <MenuItem onAction="#onToggleConsole" text="Toggle Console" />
+                    <MenuItem onAction="#onToggleBottomPanel" text="Toggle Bottom Panel" />
+                    <SeparatorMenuItem />
+                    <MenuItem onAction="#onToggleTheme" text="Toggle Theme" />
                 </Menu>
                 <Menu text="Search">
-                    <MenuItem text="Find in Files..." onAction="#onFindInFiles" accelerator="Ctrl+Shift+F"/>
+                    <MenuItem accelerator="Ctrl+Shift+F" onAction="#onFindInFiles" text="Find in Files..." />
                 </Menu>
                 <Menu text="Git">
-                    <MenuItem text="Clone from GitHub..." onAction="#onCloneFromGitHub"/>
+                    <MenuItem onAction="#onCloneFromGitHub" text="Clone from GitHub..." />
                 </Menu>
                 <Menu text="Settings">
-                    <MenuItem text="Preferences..." onAction="#onSettings"/>
+                    <MenuItem onAction="#onSettings" text="Preferences..." />
                 </Menu>
                 <Menu text="Build">
-                    <MenuItem text="Gradle: build" onAction="#onGradleBuild" accelerator="Ctrl+B"/>
-                    <MenuItem text="Gradle: run" onAction="#onGradleRun" accelerator="Ctrl+R"/>
-                    <MenuItem text="Gradle: test" onAction="#onGradleTest"/>
-                    <MenuItem text="Gradle: clean" onAction="#onGradleClean"/>
+                    <MenuItem accelerator="Ctrl+B" onAction="#onGradleBuild" text="Gradle: build" />
+                    <MenuItem accelerator="Ctrl+R" onAction="#onGradleRun" text="Gradle: run" />
+                    <MenuItem onAction="#onGradleTest" text="Gradle: test" />
+                    <MenuItem onAction="#onGradleClean" text="Gradle: clean" />
+                    <SeparatorMenuItem />
+                    <MenuItem onAction="#onPackageAsExe" text="Package as EXE..." />
                 </Menu>
             </MenuBar>
             <ToolBar>
-            <Button text="Open Folder" onAction="#onOpenFolder"/>
-            <Separator orientation="VERTICAL"/>
-            <Button text="Open File" onAction="#onOpenFile"/>
-            <Button text="Save" onAction="#onSave"/>
-            <Button text="Save As" onAction="#onSaveAs"/>
-            <Separator orientation="VERTICAL"/>
-            <Button text="New Project" onAction="#onNewProject"/>
-            <Button text="Gradle: build" onAction="#onGradleBuild"/>
-            <ComboBox fx:id="runTargetComboBox" promptText="Select to run..." onAction="#onRunSelected" prefWidth="200"/>
-            <Button text="Run" onAction="#onRunSelected"/>
-            <Button text="Gradle: test" onAction="#onGradleTest"/>
-            <Separator orientation="VERTICAL"/>
-            <Button text="Clear Console" onAction="#onClearConsole"/>
-            <Pane HBox.hgrow="ALWAYS"/>
-            <Label text="Root:"/>
-            <Label fx:id="rootLabel" text="(not set)"/>
+            <Button onAction="#onOpenFolder" text="Open Folder" />
+            <Separator orientation="VERTICAL" />
+            <Button onAction="#onOpenFile" text="Open File" />
+            <Button onAction="#onSave" text="Save" />
+            <Button onAction="#onSaveAs" text="Save As" />
+            <Separator orientation="VERTICAL" />
+            <Button onAction="#onNewProject" text="New Project" />
+            <Button onAction="#onGradleBuild" text="Gradle: build" />
+            <ComboBox fx:id="runTargetComboBox" onAction="#onRunSelected" prefHeight="25.0" prefWidth="148.0" promptText="Select to run..." />
+            <Button onAction="#onRunSelected" text="Run" />
+            <Button onAction="#onDebugProject" text="Debug" />
+            <Button onAction="#onGradleTest" text="Gradle: test" />
+            <Separator orientation="VERTICAL" />
+            <Button onAction="#onClearConsole" prefHeight="25.0" prefWidth="89.0" text="Clear Console" />
+            <Button onAction="#onToggleBottomPanel" prefHeight="25.0" prefWidth="90.0" text="Bottom Panel" />
+            <Pane HBox.hgrow="ALWAYS" />
+            <Label text="Root:" />
+            <Label fx:id="rootLabel" text="(not set)" />
+            <Separator orientation="VERTICAL" />
+            <HBox alignment="CENTER_RIGHT" spacing="10">
+                <Label style="-fx-font-size: 13px;" text="⛔" />
+                <Label fx:id="errorCountLabel" style="-fx-font-weight: bold;" text="0" />
+                <Label style="-fx-font-size: 13px;" text="⚠" />
+                <Label fx:id="warningCountLabel" style="-fx-font-weight: bold;" text="0" />
+            </HBox>
         </ToolBar>
         </VBox>
     </top>
@@ -80,36 +102,78 @@
     <center>
         <SplitPane dividerPositions="0.28">
             <VBox>
-                <Label text="Project" style="-fx-padding: 6 8 6 8; -fx-font-weight: bold;"/>
-                <TreeView fx:id="projectTree" VBox.vgrow="ALWAYS"/>
+                <Label prefHeight="29.0" prefWidth="69.0" style="-fx-padding: 6 8 6 8; -fx-font-weight: bold;" text="Project" />
+                <TreeView fx:id="projectTree" VBox.vgrow="ALWAYS" />
             </VBox>
 
             <BorderPane>
                 <top>
-                    <Label text="Editor" style="-fx-padding: 6 8 6 8; -fx-font-weight: bold;"/>
+                    <Label style="-fx-padding: 6 8 6 8; -fx-font-weight: bold;" text="Editor" />
                 </top>
                 <center>
-                    <TabPane fx:id="editorTabs" tabClosingPolicy="ALL_TABS"/>
+                    <TabPane fx:id="editorTabs" tabClosingPolicy="ALL_TABS" />
                 </center>
             </BorderPane>
         </SplitPane>
     </center>
 
     <bottom>
-        <VBox>
-            <VBox>
-                <Label text="Console" style="-fx-padding: 6 8 6 8; -fx-font-weight: bold;"/>
-                <TextArea fx:id="consoleArea" editable="true" wrapText="true" prefRowCount="8" VBox.vgrow="ALWAYS" onKeyPressed="#onConsoleKeyPressed"/>
-            </VBox>
+        <VBox fx:id="bottomPanel">
+            <TabPane fx:id="bottomTabs" prefHeight="220.0" prefWidth="1100.0" tabClosingPolicy="UNAVAILABLE">
+                <Tab text="Console">
+                    <VBox>
+                        <TextArea fx:id="consoleArea" editable="true" onKeyPressed="#onConsoleKeyPressed" prefRowCount="8" wrapText="true" VBox.vgrow="ALWAYS" />
+                    </VBox>
+                </Tab>
+                <Tab text="Problems">
+                    <VBox>
+                        <ListView fx:id="problemsList" VBox.vgrow="ALWAYS" />
+                    </VBox>
+                </Tab>
+                <Tab text="Search">
+                    <VBox>
+                        <ListView fx:id="searchResultsList" VBox.vgrow="ALWAYS" />
+                    </VBox>
+                </Tab>
+                <Tab text="Debug">
+                    <VBox spacing="6" style="-fx-padding: 6 6 6 6;">
+                        <ToolBar>
+                            <Button onAction="#onDebugContinue" text="Continue" />
+                            <Button onAction="#onDebugStepOver" text="Step Over" />
+                            <Button onAction="#onDebugStepInto" text="Step Into" />
+                            <Button onAction="#onDebugStepOut" text="Step Out" />
+                            <Button onAction="#onDebugPause" text="Pause" />
+                            <Button onAction="#onDebugStop" text="Stop" />
+                            <Pane HBox.hgrow="ALWAYS" />
+                            <Button onAction="#onShowBreakpoints" text="Show Breakpoints" />
+                            <Button onAction="#onDebugRefresh" text="Refresh" />
+                        </ToolBar>
+                        <SplitPane dividerPositions="0.25, 0.6">
+                            <VBox>
+                                <Label style="-fx-padding: 2 0 2 0; -fx-font-weight: bold;" text="Threads" />
+                                <ListView fx:id="debugThreadsList" VBox.vgrow="ALWAYS" />
+                            </VBox>
+                            <VBox>
+                                <Label style="-fx-padding: 2 0 2 0; -fx-font-weight: bold;" text="Stack" />
+                                <ListView fx:id="debugStackList" VBox.vgrow="ALWAYS" />
+                            </VBox>
+                            <VBox>
+                                <Label style="-fx-padding: 2 0 2 0; -fx-font-weight: bold;" text="Variables" />
+                                <ListView fx:id="debugVarsList" VBox.vgrow="ALWAYS" />
+                            </VBox>
+                        </SplitPane>
+                        <TextArea fx:id="debugArea" editable="false" prefRowCount="6" wrapText="true" VBox.vgrow="ALWAYS" />
+                    </VBox>
+                </Tab>
+            </TabPane>
             <BorderPane style="-fx-border-color: lightgray; -fx-border-width: 1 0 0 0;">
                 <left>
-                    <Label fx:id="statusLabel" text="Ready" style="-fx-padding: 4 8 4 8;"/>
+                    <Label fx:id="statusLabel" style="-fx-padding: 4 8 4 8;" text="Ready" />
                 </left>
                 <right>
-                    <Label fx:id="cursorPositionLabel" text="" style="-fx-padding: 4 8 4 8;"/>
+                    <Label fx:id="cursorPositionLabel" style="-fx-padding: 4 8 4 8;" text="" />
                 </right>
             </BorderPane>
         </VBox>
     </bottom>
 </BorderPane>
-

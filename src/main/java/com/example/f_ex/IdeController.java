@@ -17,6 +17,9 @@ import javafx.scene.image.ImageView;
 import javafx.scene.layout.StackPane;
 import javafx.scene.Node;
 import javafx.scene.control.ScrollPane;
+import javafx.scene.control.Alert.AlertType;
+import javafx.scene.text.Text;
+import java.util.function.IntFunction;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
@@ -27,6 +30,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.InputStream;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
@@ -38,15 +42,26 @@ import org.fxmisc.richtext.CodeArea;
 import org.fxmisc.richtext.LineNumberFactory;
 import org.fxmisc.richtext.model.StyleSpans;
 import org.fxmisc.richtext.model.StyleSpansBuilder;
+import org.fxmisc.richtext.NavigationActions;
 
 public class IdeController {
     @FXML private TreeView<Path> projectTree;
     @FXML private TabPane editorTabs;
     @FXML private TextArea consoleArea;
+    @FXML private ListView<Problem> problemsList;
+    @FXML private ListView<SearchHit> searchResultsList;
+    @FXML private VBox bottomPanel;
+    @FXML private TabPane bottomTabs;
+    @FXML private TextArea debugArea;
+    @FXML private ListView<DebugParsers.ThreadItem> debugThreadsList;
+    @FXML private ListView<DebugParsers.FrameItem> debugStackList;
+    @FXML private ListView<DebugParsers.VarItem> debugVarsList;
     @FXML private Label rootLabel;
     @FXML private Label statusLabel;
     @FXML private Label cursorPositionLabel;
     @FXML private ComboBox<RunTarget> runTargetComboBox;
+    @FXML private Label errorCountLabel;
+    @FXML private Label warningCountLabel;
 
     private Path projectRoot;
     private Path ideRoot;
@@ -87,6 +102,39 @@ public class IdeController {
     );
 
     private final ContextMenu completionMenu = new ContextMenu();
+
+    private javafx.animation.PauseTransition diagnosticsTimer;
+    private final Map<Path, List<Problem>> problemsByFile = new ConcurrentHashMap<>();
+    private final ProjectModelResolver modelResolver = new ProjectModelResolver();
+    private volatile ProjectModelResolver.ProjectModel projectModel = new ProjectModelResolver.ProjectModel(List.of(), List.of());
+    private final RecentFilesManager recentFiles = new RecentFilesManager(25);
+    private final RefactorRenameService renameService = new RefactorRenameService();
+    private final RefactorUndoManager undoManager = new RefactorUndoManager();
+    private final FileOperationsService fileOps = new FileOperationsService();
+    private final ExePackager exePackager = new ExePackager(this::logToConsole, this::updateStatus);
+    private final Map<Path, Set<Integer>> breakpoints = new ConcurrentHashMap<>();
+    private final DebugSession debugSession = new DebugSession(this::appendDebugLine);
+    private WatchService fileWatcher;
+    private Thread fileWatcherThread;
+    private javafx.animation.PauseTransition treeRefreshTimer;
+
+    private static final class SearchHit {
+        private final Path file;
+        private final int line;
+        private final String preview;
+
+        private SearchHit(Path file, int line, String preview) {
+            this.file = file;
+            this.line = line;
+            this.preview = preview;
+        }
+
+        @Override
+        public String toString() {
+            String fn = file != null && file.getFileName() != null ? file.getFileName().toString() : String.valueOf(file);
+            return fn + ":" + line + "  " + preview;
+        }
+    }
 
     public void initialize() {
         ideRoot = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
@@ -214,6 +262,67 @@ public class IdeController {
         }
         
         updateStatus("Ready");
+
+        if (debugThreadsList != null) {
+            debugThreadsList.setOnMouseClicked(e -> {
+                if (e.getClickCount() != 1) return;
+                DebugParsers.ThreadItem t = debugThreadsList.getSelectionModel().getSelectedItem();
+                if (t == null) return;
+                debugSession.request("thread " + t.id, lines -> refreshDebugStackAndVars());
+            });
+        }
+        if (debugStackList != null) {
+            debugStackList.setOnMouseClicked(e -> {
+                if (e.getClickCount() != 1) return;
+                DebugParsers.FrameItem f = debugStackList.getSelectionModel().getSelectedItem();
+                if (f == null) return;
+                debugSession.request("frame " + f.index, lines -> refreshDebugVars());
+            });
+        }
+    }
+
+    @FXML public void onDebugContinue() { sendJdb("cont"); scheduleDebugRefresh(); }
+    @FXML public void onDebugStepOver() { sendJdb("next"); scheduleDebugRefresh(); }
+    @FXML public void onDebugStepInto() { sendJdb("step"); scheduleDebugRefresh(); }
+    @FXML public void onDebugStepOut() { sendJdb("step up"); scheduleDebugRefresh(); }
+    @FXML public void onDebugPause() { sendJdb("suspend"); scheduleDebugRefresh(); }
+    @FXML public void onDebugStop() { debugSession.stop(); }
+    @FXML public void onDebugRefresh() { refreshDebugAll(); }
+
+    @FXML
+    public void onShowBreakpoints() {
+        StringBuilder sb = new StringBuilder();
+        for (var e : breakpoints.entrySet()) {
+            Path f = e.getKey();
+            for (Integer ln : e.getValue()) {
+                sb.append(f.getFileName()).append(":").append(ln).append("\n");
+            }
+        }
+        Alert a = new Alert(AlertType.INFORMATION);
+        a.setTitle("Breakpoints");
+        a.setHeaderText("Active breakpoints");
+        a.setContentText(sb.length() == 0 ? "(none)" : sb.toString());
+        a.showAndWait();
+    }
+
+    private static final class Problem {
+        private final Path file;
+        private final int line; // 1-based
+        private final String kind; // error|warning|note
+        private final String message;
+
+        private Problem(Path file, int line, String kind, String message) {
+            this.file = file;
+            this.line = line;
+            this.kind = kind;
+            this.message = message;
+        }
+
+        @Override
+        public String toString() {
+            String fn = file != null && file.getFileName() != null ? file.getFileName().toString() : String.valueOf(file);
+            return fn + ":" + line + " [" + kind + "] " + message;
+        }
     }
 
     @FXML
@@ -313,6 +422,633 @@ public class IdeController {
                 openFileInEditor(file);
             }
         });
+
+        if (searchResultsList != null) {
+            searchResultsList.setOnMouseClicked(e -> {
+                if (e.getClickCount() != 2) return;
+                SearchHit hit = searchResultsList.getSelectionModel().getSelectedItem();
+                if (hit == null) return;
+                openFileAndGoTo(hit.file, hit.line);
+            });
+        }
+
+        if (problemsList != null) {
+            problemsList.setOnMouseClicked(e -> {
+                if (e.getClickCount() != 2) return;
+                Problem p = problemsList.getSelectionModel().getSelectedItem();
+                if (p == null || p.file == null) return;
+                openFileAndGoTo(p.file, p.line);
+            });
+
+            ContextMenu cm = new ContextMenu();
+            MenuItem quickFix = new MenuItem("Quick Fix");
+            MenuItem copy = new MenuItem("Copy Message");
+            cm.getItems().addAll(quickFix, copy);
+
+            quickFix.setOnAction(ev -> {
+                Problem p = problemsList.getSelectionModel().getSelectedItem();
+                if (p == null) return;
+                runQuickFix(p);
+            });
+            copy.setOnAction(ev -> {
+                Problem p = problemsList.getSelectionModel().getSelectedItem();
+                if (p == null) return;
+                javafx.scene.input.ClipboardContent c = new javafx.scene.input.ClipboardContent();
+                c.putString(p.toString());
+                javafx.scene.input.Clipboard.getSystemClipboard().setContent(c);
+            });
+
+            problemsList.setContextMenu(cm);
+        }
+    }
+
+    private void runQuickFix(Problem p) {
+        if (p == null || p.file == null) return;
+
+        String msg = p.message == null ? "" : p.message;
+        if ("warning".equalsIgnoreCase(p.kind) && msg.toLowerCase().contains("import") && msg.toLowerCase().contains("never used")) {
+            String imp = extractUnusedImportFqn(msg);
+            if (imp == null) {
+                updateStatus("Quick fix not available");
+                return;
+            }
+            boolean ok = removeUnusedImport(p.file, imp);
+            if (ok) {
+                updateStatus("Removed unused import: " + imp);
+                refreshDiagnosticsForOpenTabIfAny(p.file);
+            } else {
+                updateStatus("Failed to apply quick fix");
+            }
+            return;
+        }
+
+        if ("error".equalsIgnoreCase(p.kind) && msg.toLowerCase().contains("cannot find symbol")) {
+            TextInputDialog d = new TextInputDialog();
+            d.setTitle("Add import");
+            d.setHeaderText("Add import (enter full qualified name)");
+            d.setContentText("import:");
+            Optional<String> r = d.showAndWait();
+            r.ifPresent(fqn -> {
+                String s = fqn == null ? "" : fqn.trim();
+                if (s.isEmpty()) return;
+                if (addImport(p.file, s)) {
+                    updateStatus("Added import: " + s);
+                    refreshDiagnosticsForOpenTabIfAny(p.file);
+                } else {
+                    updateStatus("Failed to add import");
+                }
+            });
+            return;
+        }
+
+        updateStatus("Quick fix not available");
+    }
+
+    private static String extractUnusedImportFqn(String message) {
+        if (message == null) return null;
+        Matcher m = Pattern.compile("\\bThe import\\s+([\\w\\.]+)\\s+is never used\\b").matcher(message);
+        if (m.find()) return m.group(1);
+        m = Pattern.compile("\\bimport\\s+([\\w\\.]+)\\b").matcher(message);
+        if (m.find()) return m.group(1);
+        return null;
+    }
+
+    private boolean removeUnusedImport(Path file, String fqn) {
+        try {
+            List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+            String needle = "import " + fqn + ";";
+            boolean changed = false;
+            List<String> out = new ArrayList<>(lines.size());
+            for (String l : lines) {
+                if (!changed && l.trim().equals(needle)) {
+                    changed = true;
+                    continue;
+                }
+                out.add(l);
+            }
+            if (!changed) return false;
+            Files.write(file, out, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean addImport(Path file, String fqn) {
+        try {
+            List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+            String imp = "import " + fqn + ";";
+            for (String l : lines) {
+                if (l.trim().equals(imp)) return true;
+            }
+
+            int insertAt = 0;
+            for (int i = 0; i < lines.size(); i++) {
+                String t = lines.get(i).trim();
+                if (t.startsWith("package ")) insertAt = i + 1;
+            }
+            while (insertAt < lines.size() && lines.get(insertAt).trim().isEmpty()) insertAt++;
+            while (insertAt < lines.size() && lines.get(insertAt).trim().startsWith("import ")) insertAt++;
+
+            List<String> out = new ArrayList<>(lines.size() + 2);
+            out.addAll(lines.subList(0, insertAt));
+            out.add(imp);
+            out.addAll(lines.subList(insertAt, lines.size()));
+            Files.write(file, out, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void refreshDiagnosticsForOpenTabIfAny(Path file) {
+        if (file == null) return;
+        Tab tab = openTabsByPath.get(file.normalize().toAbsolutePath());
+        if (tab == null) return;
+        EditorTabData data = (EditorTabData) tab.getUserData();
+        if (data == null || data.editor == null) return;
+        scheduleDiagnostics(file, data.editor.getText());
+    }
+
+    @FXML
+    public void onGoToClass() {
+        goToFromIndex(Set.of(CodeIndexer.CodeElementType.CLASS, CodeIndexer.CodeElementType.INTERFACE), "Go to Class");
+    }
+
+    @FXML
+    public void onGoToSymbol() {
+        goToFromIndex(Set.of(CodeIndexer.CodeElementType.CLASS, CodeIndexer.CodeElementType.INTERFACE, CodeIndexer.CodeElementType.METHOD), "Go to Symbol");
+    }
+
+    @FXML
+    public void onActionSearch() {
+        List<ActionItem> actions = buildActions();
+
+        Dialog<ActionItem> dialog = new Dialog<>();
+        dialog.setTitle("Action Search");
+        dialog.setHeaderText(null);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+
+        TextField filter = new TextField();
+        filter.setPromptText("Type action name...");
+        ListView<ActionItem> list = new ListView<>();
+
+        filter.textProperty().addListener((o, a, b) -> {
+            String q = b == null ? "" : b.trim().toLowerCase();
+            if (q.isEmpty()) {
+                list.getItems().setAll(actions.stream().limit(40).toList());
+                return;
+            }
+            List<ActionItem> found = actions.stream()
+                    .filter(x -> x.name.toLowerCase().contains(q))
+                    .limit(200)
+                    .toList();
+            list.getItems().setAll(found);
+        });
+
+        list.setOnMouseClicked(e -> {
+            if (e.getClickCount() == 2) dialog.setResult(list.getSelectionModel().getSelectedItem());
+        });
+
+        VBox box = new VBox(8, filter, list);
+        box.setPadding(new Insets(10));
+        dialog.getDialogPane().setContent(box);
+
+        dialog.setResultConverter(bt -> bt == ButtonType.OK ? list.getSelectionModel().getSelectedItem() : null);
+
+        Platform.runLater(filter::requestFocus);
+        list.getItems().setAll(actions.stream().limit(40).toList());
+
+        Optional<ActionItem> picked = dialog.showAndWait();
+        picked.ifPresent(a -> a.run.run());
+    }
+
+    @FXML
+    public void onFindUsages() {
+        Tab tab = editorTabs != null ? editorTabs.getSelectionModel().getSelectedItem() : null;
+        EditorTabData data = tab != null ? (EditorTabData) tab.getUserData() : null;
+        String initial = "";
+        if (data != null && data.editor != null) {
+            initial = wordAt(data.editor.getText(), data.editor.getCaretPosition());
+            if (initial == null) initial = "";
+        }
+
+        TextInputDialog d = new TextInputDialog(initial);
+        d.setTitle("Find Usages");
+        d.setHeaderText("Find usages in project");
+        d.setContentText("Symbol:");
+        Optional<String> res = d.showAndWait();
+        res.ifPresent(sym -> {
+            String s = sym == null ? "" : sym.trim();
+            if (s.isEmpty()) return;
+            findUsagesInProject(s);
+        });
+    }
+
+    @FXML
+    public void onGoToFile() {
+        if (projectRoot == null) {
+            updateStatus("No project root set");
+            return;
+        }
+        TextInputDialog d = new TextInputDialog();
+        d.setTitle("Go to File");
+        d.setHeaderText("Type part of file name");
+        d.setContentText("File:");
+        Optional<String> r = d.showAndWait();
+        r.ifPresent(q -> {
+            String s = q == null ? "" : q.trim().toLowerCase();
+            if (s.isEmpty()) return;
+            Path found = findFileByName(projectRoot, s);
+            if (found != null) openFileInEditor(found);
+            else updateStatus("File not found");
+        });
+    }
+
+    @FXML
+    public void onRecentFiles() {
+        List<Path> items = recentFiles.list();
+        if (items.isEmpty()) {
+            updateStatus("No recent files");
+            return;
+        }
+        ChoiceDialog<Path> d = new ChoiceDialog<>(items.get(0), items);
+        d.setTitle("Recent Files");
+        d.setHeaderText(null);
+        d.setContentText("Open:");
+        d.showAndWait().ifPresent(this::openFileInEditor);
+    }
+
+    @FXML
+    public void onRename() {
+        Tab tab = editorTabs != null ? editorTabs.getSelectionModel().getSelectedItem() : null;
+        EditorTabData data = tab != null ? (EditorTabData) tab.getUserData() : null;
+        if (data == null || data.path == null || data.editor == null) {
+            updateStatus("No editor file selected");
+            return;
+        }
+        String from = wordAt(data.editor.getText(), data.editor.getCaretPosition());
+        if (from == null || from.isBlank()) {
+            updateStatus("Place caret on identifier");
+            return;
+        }
+        Dialog<Map<String, Object>> d = new Dialog<>();
+        d.setTitle("Rename");
+        d.setHeaderText("Rename identifier");
+        ButtonType ok = new ButtonType("Rename", ButtonBar.ButtonData.OK_DONE);
+        d.getDialogPane().getButtonTypes().addAll(ok, ButtonType.CANCEL);
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.setPadding(new Insets(10));
+
+        TextField newNameField = new TextField(from);
+        CheckBox wholeProject = new CheckBox("Whole project");
+        wholeProject.setSelected(false);
+
+        grid.add(new Label("New name:"), 0, 0);
+        grid.add(newNameField, 1, 0);
+        grid.add(wholeProject, 1, 1);
+
+        d.getDialogPane().setContent(grid);
+        d.setResultConverter(bt -> {
+            if (bt != ok) return null;
+            Map<String, Object> m = new HashMap<>();
+            m.put("to", newNameField.getText());
+            m.put("project", wholeProject.isSelected());
+            return m;
+        });
+
+        d.showAndWait().ifPresent(m -> {
+            String newName = m.get("to") == null ? "" : m.get("to").toString().trim();
+            boolean proj = Boolean.TRUE.equals(m.get("project"));
+            if (newName.isEmpty()) return;
+
+            boolean renameFileToo = false;
+            Path fileForRename = data.path;
+            if (!proj && fileForRename != null && fileForRename.toString().endsWith(".java")) {
+                String base = fileForRename.getFileName() != null ? fileForRename.getFileName().toString() : "";
+                if (base.endsWith(".java")) base = base.substring(0, base.length() - 5);
+                if (base.equals(from) && newName.matches("[A-Za-z_$][A-Za-z\\d_$]*")) {
+                    Alert ask = new Alert(AlertType.CONFIRMATION);
+                    ask.setTitle("Rename File");
+                    ask.setHeaderText(null);
+                    ask.setContentText("Also rename file to " + newName + ".java ?");
+                    Optional<ButtonType> ans = ask.showAndWait();
+                    renameFileToo = ans.isPresent() && ans.get() == ButtonType.OK;
+                }
+            }
+
+            List<Path> files = proj ? listAllJavaFiles(projectRoot) : List.of(data.path);
+            RefactorRenameService.RenamePlan plan = renameService.planRename(files, from, newName);
+            if (plan.changes.isEmpty()) {
+                updateStatus("Nothing to rename");
+                return;
+            }
+
+            if (!confirmRenamePlan(plan)) return;
+
+            undoManager.rememberBackup(plan);
+            RefactorRenameService.RenameResult res = renameService.applyPlan(plan);
+            updateStatus("Rename: " + res.occurrences + " occurrences in " + res.filesChanged + " files");
+            reopenAllOpenEditors();
+
+            if (renameFileToo && fileForRename != null) {
+                try {
+                    Path oldAbs = fileForRename.normalize().toAbsolutePath();
+                    Path newAbs = fileOps.renameFile(oldAbs, newName + ".java").normalize().toAbsolutePath();
+                    Tab opened = openTabsByPath.remove(oldAbs);
+                    if (opened != null) {
+                        openTabsByPath.put(newAbs, opened);
+                        opened.setText(newAbs.getFileName() != null ? newAbs.getFileName().toString() : newAbs.toString());
+                        EditorTabData td = (EditorTabData) opened.getUserData();
+                        if (td != null) td.path = newAbs;
+                    }
+                    refreshTreeIfUnderRoot(newAbs);
+                    updateStatus("Renamed file to: " + newAbs.getFileName());
+                } catch (Exception e) {
+                    updateStatus("File rename failed: " + e.getMessage());
+                }
+            }
+        });
+    }
+
+    private boolean confirmRenamePlan(RefactorRenameService.RenamePlan plan) {
+        int files = plan.changes.size();
+        int occ = plan.changes.stream().mapToInt(c -> c.occurrences).sum();
+        StringBuilder sb = new StringBuilder();
+        sb.append("Rename ").append(plan.from).append(" -> ").append(plan.to).append("\n");
+        sb.append("Files: ").append(files).append(", occurrences: ").append(occ).append("\n\n");
+        int shown = 0;
+        for (RefactorRenameService.FileChange ch : plan.changes) {
+            if (shown >= 20) break;
+            sb.append(ch.file.getFileName()).append(" (").append(ch.occurrences).append(")\n");
+            shown++;
+        }
+        if (files > shown) sb.append("... +").append(files - shown).append(" more\n");
+
+        Alert a = new Alert(AlertType.CONFIRMATION);
+        a.setTitle("Rename Preview");
+        a.setHeaderText(null);
+        a.setContentText(sb.toString());
+        Optional<ButtonType> r = a.showAndWait();
+        return r.isPresent() && r.get() == ButtonType.OK;
+    }
+
+    @FXML
+    public void onUndoRefactor() {
+        int restored = undoManager.undo();
+        if (restored == 0) {
+            updateStatus("Nothing to undo");
+            return;
+        }
+        updateStatus("Undo: restored " + restored + " files");
+        reopenAllOpenEditors();
+    }
+
+    @FXML
+    public void onRenameFile() {
+        Path target = null;
+
+        Tab tab = editorTabs != null ? editorTabs.getSelectionModel().getSelectedItem() : null;
+        EditorTabData data = tab != null ? (EditorTabData) tab.getUserData() : null;
+        if (data != null && data.path != null) {
+            target = data.path;
+        } else if (projectTree != null && projectTree.getSelectionModel().getSelectedItem() != null) {
+            target = projectTree.getSelectionModel().getSelectedItem().getValue();
+        }
+
+        if (target == null || !Files.exists(target) || Files.isDirectory(target)) {
+            updateStatus("Select a file to rename");
+            return;
+        }
+
+        String current = target.getFileName() != null ? target.getFileName().toString() : target.toString();
+        final Path targetFinal = target;
+        TextInputDialog d = new TextInputDialog(current);
+        d.setTitle("Rename File");
+        d.setHeaderText(null);
+        d.setContentText("New file name:");
+        d.showAndWait().ifPresent(newName -> {
+            try {
+                Path oldAbs = targetFinal.normalize().toAbsolutePath();
+                Path newAbs = fileOps.renameFile(oldAbs, newName).normalize().toAbsolutePath();
+
+                Tab opened = openTabsByPath.remove(oldAbs);
+                if (opened != null) {
+                    openTabsByPath.put(newAbs, opened);
+                    opened.setText(newAbs.getFileName() != null ? newAbs.getFileName().toString() : newAbs.toString());
+                    EditorTabData td = (EditorTabData) opened.getUserData();
+                    if (td != null) td.path = newAbs;
+                }
+
+                // Если это Java-файл и имя класса совпадало с именем файла — переименуем класс внутри
+                String oldName = current;
+                String newFile = newAbs.getFileName() != null ? newAbs.getFileName().toString() : null;
+                if (oldName != null && newFile != null && oldName.endsWith(".java") && newFile.endsWith(".java")) {
+                    String oldBase = oldName.substring(0, oldName.length() - 5);
+                    String newBase = newFile.substring(0, newFile.length() - 5);
+                    if (!oldBase.equals(newBase) && newBase.matches("[A-Za-z_$][A-Za-z\\d_$]*")) {
+                        try {
+                            String src = Files.readString(newAbs, StandardCharsets.UTF_8);
+                            if (src.contains("class " + oldBase) || src.contains("interface " + oldBase) || src.contains("enum " + oldBase) || src.contains("record " + oldBase)) {
+                                RefactorRenameService.RenamePlan plan = renameService.planRename(List.of(newAbs), oldBase, newBase);
+                                if (!plan.changes.isEmpty()) {
+                                    undoManager.rememberBackup(plan);
+                                    renameService.applyPlan(plan);
+                                }
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+
+                refreshTreeIfUnderRoot(newAbs);
+                updateStatus("Renamed: " + current + " -> " + newAbs.getFileName());
+            } catch (Exception e) {
+                updateStatus("Rename failed: " + e.getMessage());
+            }
+        });
+    }
+
+    private List<Path> listAllJavaFiles(Path root) {
+        if (root == null) return List.of();
+        try {
+            return Files.walk(root, 20)
+                    .filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".java"))
+                    .filter(p -> !CodeIndexer.shouldHidePath(p.getParent()))
+                    .toList();
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    private void reopenAllOpenEditors() {
+        List<Path> toReopen = new ArrayList<>();
+        for (Tab t : new ArrayList<>(editorTabs.getTabs())) {
+            EditorTabData d = (EditorTabData) t.getUserData();
+            if (d != null && d.path != null && d.editor != null) {
+                toReopen.add(d.path);
+            }
+        }
+        editorTabs.getTabs().removeIf(t -> {
+            EditorTabData d = (EditorTabData) t.getUserData();
+            return d != null && d.editor != null;
+        });
+        for (Path p : toReopen) {
+            openTabsByPath.remove(p.normalize().toAbsolutePath());
+        }
+        for (Path p : toReopen) openFileInEditor(p);
+    }
+
+    private static Path findFileByName(Path root, String needleLower) {
+        try {
+            return Files.walk(root, 20)
+                    .filter(Files::isRegularFile)
+                    .filter(p -> !CodeIndexer.shouldHidePath(p.getParent()))
+                    .filter(p -> p.getFileName() != null && p.getFileName().toString().toLowerCase().contains(needleLower))
+                    .findFirst()
+                    .orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static final class ActionItem {
+        private final String name;
+        private final Runnable run;
+
+        private ActionItem(String name, Runnable run) {
+            this.name = name;
+            this.run = run;
+        }
+
+        @Override
+        public String toString() {
+            return name;
+        }
+    }
+
+    private List<ActionItem> buildActions() {
+        List<ActionItem> a = new ArrayList<>();
+        a.add(new ActionItem("Go to Class...", this::onGoToClass));
+        a.add(new ActionItem("Go to Symbol...", this::onGoToSymbol));
+        a.add(new ActionItem("Go to File...", this::onGoToFile));
+        a.add(new ActionItem("Recent Files...", this::onRecentFiles));
+        a.add(new ActionItem("Find Usages...", this::onFindUsages));
+        a.add(new ActionItem("Find in Files...", this::onFindInFiles));
+        a.add(new ActionItem("Toggle Theme", this::onToggleTheme));
+        a.add(new ActionItem("Toggle Bottom Panel", this::onToggleBottomPanel));
+        a.add(new ActionItem("Preferences...", this::onSettings));
+        a.add(new ActionItem("Run Selected", this::onRunSelected));
+        a.add(new ActionItem("Debug Project", this::onDebugProject));
+        a.add(new ActionItem("Rename...", this::onRename));
+        a.add(new ActionItem("Rename File...", this::onRenameFile));
+        a.add(new ActionItem("Undo Refactor", this::onUndoRefactor));
+        a.add(new ActionItem("Open Project...", this::onOpenFolder));
+        a.add(new ActionItem("Open File...", this::onOpenFile));
+        a.add(new ActionItem("Save", this::onSave));
+        a.add(new ActionItem("Save As...", this::onSaveAs));
+        a.add(new ActionItem("Clone from GitHub...", this::onCloneFromGitHub));
+        a.add(new ActionItem("Gradle: build", this::onGradleBuild));
+        a.add(new ActionItem("Gradle: run", this::onGradleRun));
+        a.add(new ActionItem("Gradle: test", this::onGradleTest));
+        a.add(new ActionItem("Gradle: clean", this::onGradleClean));
+        a.add(new ActionItem("Package as EXE...", this::onPackageAsExe));
+        return a;
+    }
+
+    private void goToFromIndex(Set<CodeIndexer.CodeElementType> types, String title) {
+        if (codeIndexer == null) {
+            updateStatus("Index not ready");
+            return;
+        }
+
+        Dialog<CodeIndexer.CodeElement> dialog = new Dialog<>();
+        dialog.setTitle(title);
+        dialog.setHeaderText(null);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+
+        TextField filter = new TextField();
+        filter.setPromptText("Type to search...");
+        ListView<CodeIndexer.CodeElement> list = new ListView<>();
+
+        filter.textProperty().addListener((o, a, b) -> {
+            String q = b == null ? "" : b.trim();
+            if (q.isEmpty()) {
+                list.getItems().clear();
+                return;
+            }
+            List<CodeIndexer.CodeElement> found = codeIndexer.findCompletions(q).stream()
+                    .filter(e -> types.contains(e.getType()))
+                    .limit(200)
+                    .toList();
+            list.getItems().setAll(found);
+        });
+
+        list.setOnMouseClicked(e -> {
+            if (e.getClickCount() == 2) dialog.setResult(list.getSelectionModel().getSelectedItem());
+        });
+
+        VBox box = new VBox(8, filter, list);
+        box.setPadding(new Insets(10));
+        dialog.getDialogPane().setContent(box);
+
+        dialog.setResultConverter(bt -> bt == ButtonType.OK ? list.getSelectionModel().getSelectedItem() : null);
+
+        Optional<CodeIndexer.CodeElement> picked = dialog.showAndWait();
+        picked.ifPresent(e -> openFileAndGoTo(e.getFile(), e.getLine()));
+    }
+
+    private void findUsagesInProject(String symbol) {
+        if (projectRoot == null) {
+            updateStatus("No project root set");
+            return;
+        }
+        if (searchResultsList == null) return;
+
+        if (bottomPanel != null) {
+            bottomPanel.setVisible(true);
+            bottomPanel.setManaged(true);
+        }
+        if (bottomTabs != null) bottomTabs.getSelectionModel().select(2); // Search tab index
+
+        Pattern pat = Pattern.compile("\\b" + Pattern.quote(symbol) + "\\b");
+        searchResultsList.getItems().clear();
+        updateStatus("Searching usages: " + symbol);
+
+        Thread t = new Thread(() -> {
+            List<SearchHit> hits = new ArrayList<>();
+            try {
+                Files.walk(projectRoot, 20)
+                        .filter(Files::isRegularFile)
+                        .filter(p -> p.toString().endsWith(".java"))
+                        .filter(p -> !CodeIndexer.shouldHidePath(p.getParent()))
+                        .forEach(file -> {
+                            try {
+                                List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+                                for (int i = 0; i < lines.size(); i++) {
+                                    String ln = lines.get(i);
+                                    if (!pat.matcher(ln).find()) continue;
+                                    String prev = ln.trim();
+                                    if (prev.length() > 160) prev = prev.substring(0, 160) + "...";
+                                    hits.add(new SearchHit(file, i + 1, prev));
+                                    if (hits.size() >= 2000) return;
+                                }
+                            } catch (Exception ignored) {
+                            }
+                        });
+            } catch (Exception ignored) {
+            }
+            Platform.runLater(() -> {
+                searchResultsList.getItems().setAll(hits);
+                updateStatus("Usages: " + hits.size());
+            });
+        }, "find-usages");
+        t.setDaemon(true);
+        t.start();
     }
 
     @FXML
@@ -335,6 +1071,105 @@ public class IdeController {
         RunTarget selected = runTargetComboBox != null ? runTargetComboBox.getValue() : null;
         if (selected != null) {
             runSelectedTarget(selected);
+        }
+    }
+
+    @FXML
+    public void onDebugProject() {
+        RunTarget selected = runTargetComboBox != null ? runTargetComboBox.getValue() : null;
+        if (selected == null) {
+            refreshRunTargets();
+            selected = runTargetComboBox != null ? runTargetComboBox.getValue() : null;
+        }
+        if (selected == null) {
+            updateStatus("No run target selected");
+            return;
+        }
+        logToConsole("[DEBUG] Starting (JDWP): " + selected.getDisplayName());
+        debugSelectedTarget(selected);
+        Platform.runLater(() -> {
+            if (bottomTabs != null) bottomTabs.getSelectionModel().select(3);
+        });
+        startJdbAttach();
+    }
+
+    private void startJdbAttach() {
+        debugSession.connectSocket("localhost", 5005);
+        debugSession.send("suspend");
+        applyBreakpointsToJdb();
+        RunTarget selected = runTargetComboBox != null ? runTargetComboBox.getValue() : null;
+        if (selected != null && selected.getPath() != null) {
+            String cls = inferClassName(selected.getPath());
+            if (cls != null && !cls.isBlank()) debugSession.send("stop in " + cls + ".main");
+        }
+        refreshDebugAll();
+    }
+
+    private void appendDebugLine(String s) {
+        if (debugArea == null) return;
+        debugArea.appendText(s + "\n");
+    }
+
+    private void sendJdb(String cmd) {
+        debugSession.send(cmd);
+    }
+
+    private void applyBreakpointsToJdb() {
+        RunTarget selected = runTargetComboBox != null ? runTargetComboBox.getValue() : null;
+        if (selected == null) return;
+        Path javaFile = selected.getPath();
+        if (javaFile == null) return;
+
+        String cls = inferClassName(javaFile);
+        if (cls == null || cls.isBlank()) return;
+
+        Set<Integer> lines = breakpoints.getOrDefault(javaFile, Set.of());
+        for (Integer ln : lines) {
+            debugSession.send("stop at " + cls + ":" + ln);
+        }
+    }
+
+    private void refreshDebugAll() {
+        refreshDebugThreads();
+        refreshDebugStackAndVars();
+    }
+
+    private void refreshDebugThreads() {
+        if (debugThreadsList == null) return;
+        debugSession.request("threads", lines -> debugThreadsList.getItems().setAll(DebugParsers.parseThreads(lines)));
+    }
+
+    private void refreshDebugStackAndVars() {
+        refreshDebugStack();
+        refreshDebugVars();
+    }
+
+    private void refreshDebugStack() {
+        if (debugStackList == null) return;
+        debugSession.request("where", lines -> debugStackList.getItems().setAll(DebugParsers.parseWhere(lines)));
+    }
+
+    private void refreshDebugVars() {
+        if (debugVarsList == null) return;
+        debugSession.request("locals", lines -> debugVarsList.getItems().setAll(DebugParsers.parseLocals(lines)));
+    }
+
+    private void scheduleDebugRefresh() {
+        javafx.animation.PauseTransition pt = new javafx.animation.PauseTransition(javafx.util.Duration.millis(300));
+        pt.setOnFinished(e -> refreshDebugAll());
+        pt.play();
+    }
+
+    private String inferClassName(Path javaFile) {
+        try {
+            String content = Files.readString(javaFile, StandardCharsets.UTF_8);
+            Matcher pm = Pattern.compile("\\bpackage\\s+([\\w.]+)\\s*;").matcher(content);
+            String pkg = pm.find() ? pm.group(1) : "";
+            String name = javaFile.getFileName() != null ? javaFile.getFileName().toString() : "";
+            if (name.endsWith(".java")) name = name.substring(0, name.length() - 5);
+            return pkg.isEmpty() ? name : (pkg + "." + name);
+        } catch (Exception e) {
+            return null;
         }
     }
     
@@ -537,6 +1372,13 @@ public class IdeController {
             runJavaFile(target.getPath());
         }
     }
+
+    private void debugSelectedTarget(RunTarget target) {
+        if (target == null || target.getPath() == null) return;
+        if (target.getType() == RunTargetType.CURRENT_FILE || target.getType() == RunTargetType.MAIN_CLASS) {
+            debugJavaFile(target.getPath());
+        }
+    }
     
     private void runJavaFile(Path javaFile) {
         if (projectRoot == null) {
@@ -588,6 +1430,51 @@ public class IdeController {
             }
         } else {
             // Для Gradle/Maven используем стандартный запуск
+            onRunProjectDefault();
+        }
+    }
+
+    private void debugJavaFile(Path javaFile) {
+        if (projectRoot == null) {
+            updateStatus("No project root set");
+            return;
+        }
+
+        ProjectDetector.ProjectType type = ProjectDetector.detectProjectType(projectRoot);
+
+        if (type == ProjectDetector.ProjectType.INTELLIJ_IDEA || type == ProjectDetector.ProjectType.JAVA) {
+            if (type == ProjectDetector.ProjectType.INTELLIJ_IDEA) {
+                IntelliJProjectRunner runner = new IntelliJProjectRunner(
+                        this::logToConsole,
+                        () -> updateStatus("Debug: " + javaFile.getFileName()),
+                        p -> {
+                            currentRunningProcess = p;
+                            if (p != null) {
+                                try { processInput = p.getOutputStream(); } catch (Exception e) { processInput = null; }
+                            } else {
+                                processInput = null;
+                            }
+                        }
+                );
+                runner.debugFile(projectRoot, javaFile);
+            } else {
+                JavaProjectRunner runner = new JavaProjectRunner(
+                        this::logToConsole,
+                        () -> updateStatus("Debug: " + javaFile.getFileName()),
+                        p -> {
+                            currentRunningProcess = p;
+                            if (p != null) {
+                                try { processInput = p.getOutputStream(); } catch (Exception e) { processInput = null; }
+                            } else {
+                                processInput = null;
+                            }
+                        }
+                );
+                runner.debugFile(projectRoot, javaFile);
+            }
+            logToConsole("[DEBUG] Attach debugger to localhost:5005");
+        } else {
+            logToConsole("[DEBUG] For Gradle/Maven projects: JDWP debug is not wired yet.");
             onRunProjectDefault();
         }
     }
@@ -804,6 +1691,20 @@ public class IdeController {
     @FXML public void onGradleClean() { runGradle("clean"); }
 
     @FXML
+    public void onPackageAsExe() {
+        if (projectRoot == null) {
+            updateStatus("No project root set");
+            return;
+        }
+        ProjectDetector.ProjectType type = ProjectDetector.detectProjectType(projectRoot);
+        if (type != ProjectDetector.ProjectType.GRADLE && type != ProjectDetector.ProjectType.MAVEN) {
+            updateStatus("EXE packaging supported only for Gradle/Maven projects");
+            return;
+        }
+        exePackager.packageAsExe(projectRoot, type);
+    }
+
+    @FXML
     public void onClearConsole() {
         consoleArea.clear();
     }
@@ -950,6 +1851,20 @@ public class IdeController {
         consoleVisible = !consoleVisible;
         // Простое переключение - можно улучшить через SplitPane
         updateStatus("Console " + (consoleVisible ? "shown" : "hidden"));
+    }
+
+    @FXML
+    public void onToggleBottomPanel() {
+        if (bottomPanel == null) return;
+        boolean show = !bottomPanel.isVisible();
+        bottomPanel.setVisible(show);
+        bottomPanel.setManaged(show);
+        if (show) {
+            bottomPanel.setPrefHeight(260);
+        } else {
+            bottomPanel.setPrefHeight(0);
+        }
+        updateStatus(show ? "Bottom panel shown" : "Bottom panel hidden");
     }
     
     @FXML
@@ -1264,6 +2179,7 @@ public class IdeController {
             }
         }
         
+        stopFileWatcher();
         projectRoot = actualRoot;
         rootLabel.setText(projectRoot.toString());
         projectTree.setRoot(buildFileTreeRoot(projectRoot));
@@ -1273,6 +2189,14 @@ public class IdeController {
         // Показываем тип проекта
         ProjectDetector.ProjectType detectedType = ProjectDetector.detectProjectType(projectRoot);
         logToConsole("Project type: " + detectedType);
+
+        Thread pm = new Thread(() -> {
+            ProjectModelResolver.ProjectModel m = modelResolver.resolve(projectRoot, detectedType);
+            projectModel = m;
+            Platform.runLater(() -> logToConsole("Project model: srcRoots=" + m.sourceRoots.size() + ", cp=" + m.classpath.size()));
+        }, "project-model");
+        pm.setDaemon(true);
+        pm.start();
         
         // Индексируем проект для автодополнения
         codeIndexer = new CodeIndexer(projectRoot);
@@ -1286,6 +2210,9 @@ public class IdeController {
         
         // Обновляем список целей запуска
         refreshRunTargets();
+        
+        // Запускаем отслеживание изменений файловой системы
+        startFileWatcher();
     }
     
     private void applyTheme(String theme) {
@@ -1449,7 +2376,7 @@ public class IdeController {
         // Оптимизация для больших файлов - загружаем по частям
         if (text.length() > 100000) { // Если файл больше 100KB
             editor.replaceText(text.substring(0, Math.min(50000, text.length())));
-            editor.setParagraphGraphicFactory(LineNumberFactory.get(editor));
+            editor.setParagraphGraphicFactory(createGutter(editor, abs));
             // Загружаем остальное в фоне
             Thread loadThread = new Thread(() -> {
                 String remaining = text.substring(50000);
@@ -1462,11 +2389,20 @@ public class IdeController {
             loadThread.start();
         } else {
             editor.replaceText(text);
-            editor.setParagraphGraphicFactory(LineNumberFactory.get(editor));
+            editor.setParagraphGraphicFactory(createGutter(editor, abs));
         }
 
         editor.textProperty().addListener((obs, old, newVal) -> applyHighlighting(editor));
         editor.caretPositionProperty().addListener((obs, old, pos) -> updateCursorPosition(editor));
+
+        editor.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_CLICKED, e -> {
+            if (!e.isControlDown()) return;
+            int pos = editor.hit(e.getX(), e.getY()).getInsertionIndex();
+            String word = wordAt(editor.getText(), pos);
+            if (word == null || word.isBlank()) return;
+            goToDefinition(word);
+            e.consume();
+        });
 
         // Автоматическое автодополнение при вводе
         if (settingsManager.getBoolean(SettingsManager.KEY_AUTO_COMPLETE, true)) {
@@ -1485,6 +2421,13 @@ public class IdeController {
                     }
                 }
             });
+        }
+
+        // Реалтайм диагностика (javac) для Java файлов
+        if (abs.toString().toLowerCase().endsWith(".java")) {
+            editor.textProperty().addListener((obs, oldVal, newVal) -> scheduleDiagnostics(abs, newVal));
+            // Первичная диагностика при открытии
+            scheduleDiagnostics(abs, editor.getText());
         }
         
         // Ctrl+Space: принудительный показ автодополнения
@@ -1506,6 +2449,231 @@ public class IdeController {
         applyHighlighting(editor);
         updateCursorPosition(editor);
         logToConsole("Opened: " + abs);
+        recentFiles.markOpened(abs);
+    }
+
+    private static String wordAt(String text, int pos) {
+        if (text == null || text.isEmpty()) return null;
+        if (pos < 0) pos = 0;
+        if (pos > text.length()) pos = text.length();
+
+        int l = pos;
+        while (l > 0 && Character.isJavaIdentifierPart(text.charAt(l - 1))) l--;
+        int r = pos;
+        while (r < text.length() && Character.isJavaIdentifierPart(text.charAt(r))) r++;
+        if (r <= l) return null;
+        return text.substring(l, r);
+    }
+
+    private void goToDefinition(String symbol) {
+        if (codeIndexer == null || symbol == null || symbol.isBlank()) return;
+        List<CodeIndexer.CodeElement> hits = codeIndexer.findCompletions(symbol).stream()
+                .filter(e -> e.getName().equals(symbol))
+                .toList();
+        if (hits.isEmpty()) {
+            updateStatus("Definition not found: " + symbol);
+            return;
+        }
+        CodeIndexer.CodeElement best = hits.get(0);
+        openFileAndGoTo(best.getFile(), best.getLine());
+    }
+
+    private void openFileAndGoTo(Path file, int line) {
+        if (file == null) return;
+        openFileInEditor(file);
+        Platform.runLater(() -> {
+            Tab tab = openTabsByPath.get(file.normalize().toAbsolutePath());
+            if (tab == null) return;
+            EditorTabData data = (EditorTabData) tab.getUserData();
+            if (data == null || data.editor == null) return;
+            int ln = Math.max(1, line);
+            int para = ln - 1;
+            if (para >= data.editor.getParagraphs().size()) para = data.editor.getParagraphs().size() - 1;
+            data.editor.moveTo(para, 0);
+            data.editor.requestFocus();
+        });
+    }
+
+    private IntFunction<Node> createGutter(CodeArea editor, Path file) {
+        IntFunction<Node> base = LineNumberFactory.get(editor);
+        return line -> {
+            Node lnNode = base.apply(line);
+            int ln = line + 1;
+
+            Text dot = new Text("●");
+            dot.setStyle("-fx-fill: transparent;");
+            if (file != null && breakpoints.getOrDefault(file, Set.of()).contains(ln)) {
+                dot.setStyle("-fx-fill: #e51400;");
+            }
+
+            HBox box = new HBox(6, dot, lnNode);
+            box.setOnMouseClicked(e -> {
+                if (file == null) return;
+                toggleBreakpoint(file, ln);
+                dot.setStyle(breakpoints.getOrDefault(file, Set.of()).contains(ln) ? "-fx-fill: #e51400;" : "-fx-fill: transparent;");
+            });
+            return box;
+        };
+    }
+
+    private void toggleBreakpoint(Path file, int line) {
+        breakpoints.compute(file, (k, v) -> {
+            Set<Integer> s = (v == null) ? new HashSet<>() : new HashSet<>(v);
+            if (!s.add(line)) s.remove(line);
+            return s;
+        });
+        updateStatus("Breakpoint " + (breakpoints.getOrDefault(file, Set.of()).contains(line) ? "set" : "removed") + ": " + file.getFileName() + ":" + line);
+        if (debugSession.isReady()) applyBreakpointsToJdb();
+    }
+
+    private void scheduleDiagnostics(Path file, String content) {
+        if (file == null) return;
+        if (diagnosticsTimer != null) diagnosticsTimer.stop();
+        diagnosticsTimer = new javafx.animation.PauseTransition(javafx.util.Duration.millis(800));
+        diagnosticsTimer.setOnFinished(e -> runDiagnosticsInBackground(file, content));
+        diagnosticsTimer.play();
+    }
+
+    private void runDiagnosticsInBackground(Path file, String content) {
+        if (file == null) return;
+        // Если projectRoot не задан, всё равно попробуем на одном файле
+        Thread t = new Thread(() -> {
+            List<Problem> problems = compileWithJavacAndParseProblems(file, content);
+            problemsByFile.put(file, problems);
+            Platform.runLater(() -> updateProblemsPanel());
+        }, "javac-diagnostics");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void updateProblemsPanel() {
+        if (problemsList == null) return;
+        int err = 0;
+        int warn = 0;
+        List<Problem> items = new ArrayList<>();
+        for (var entry : problemsByFile.entrySet()) {
+            for (Problem p : entry.getValue()) {
+                if ("error".equalsIgnoreCase(p.kind)) err++;
+                else if ("warning".equalsIgnoreCase(p.kind)) warn++;
+                items.add(p);
+            }
+        }
+        items.sort((a, b) -> {
+            int ka = "error".equalsIgnoreCase(a.kind) ? 0 : "warning".equalsIgnoreCase(a.kind) ? 1 : 2;
+            int kb = "error".equalsIgnoreCase(b.kind) ? 0 : "warning".equalsIgnoreCase(b.kind) ? 1 : 2;
+            if (ka != kb) return Integer.compare(ka, kb);
+            String fa = a.file != null ? a.file.toString() : "";
+            String fb = b.file != null ? b.file.toString() : "";
+            int fc = fa.compareToIgnoreCase(fb);
+            if (fc != 0) return fc;
+            return Integer.compare(a.line, b.line);
+        });
+        problemsList.getItems().setAll(items);
+        if (errorCountLabel != null) errorCountLabel.setText(String.valueOf(err));
+        if (warningCountLabel != null) warningCountLabel.setText(String.valueOf(warn));
+        updateStatus((err == 0 && warn == 0) ? "Ready" : ("⛔ " + err + "  ⚠ " + warn));
+    }
+
+    private List<Problem> compileWithJavacAndParseProblems(Path file, String content) {
+        List<Problem> result = new ArrayList<>();
+        try {
+            Path tmpDir = Files.createTempDirectory("f_ex_javac_");
+            tmpDir.toFile().deleteOnExit();
+
+            Path tmpFile = tmpDir.resolve(file.getFileName().toString());
+            Files.writeString(tmpFile, content == null ? "" : content, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+
+            List<String> cmd = new ArrayList<>();
+            boolean isWindows = System.getProperty("os.name").toLowerCase().contains("win");
+            if (isWindows) {
+                cmd.addAll(List.of("cmd.exe", "/c", "javac"));
+            } else {
+                cmd.add("javac");
+            }
+            cmd.addAll(List.of(
+                    "-encoding", "UTF-8",
+                    "-Xlint:all",
+                    "-proc:none",
+                    "-d", tmpDir.toString()
+            ));
+
+            if (projectModel != null && !projectModel.sourceRoots.isEmpty()) {
+                cmd.add("-sourcepath");
+                cmd.add(joinPaths(projectModel.sourceRoots));
+            }
+            if (projectModel != null && !projectModel.classpath.isEmpty()) {
+                cmd.add("-cp");
+                cmd.add(joinPaths(projectModel.classpath));
+            }
+            cmd.add(tmpFile.toString());
+
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    out.append(line).append('\n');
+                }
+            }
+            p.waitFor();
+
+            // javac обычно печатает блоками:
+            // <file>:<line>: <kind>: <message>
+            // <source line>
+            // <caret line>
+            Pattern head = Pattern.compile("^(.*?):(\\d+):\\s*(error|warning|note):\\s*(.*)$");
+            String[] lines = out.toString().split("\\R");
+            for (int i = 0; i < lines.length; i++) {
+                String raw = lines[i].trim();
+                Matcher m = head.matcher(raw);
+                if (!m.matches()) continue;
+                int ln = safeParseInt(m.group(2));
+                String kind = m.group(3);
+                String msg = m.group(4);
+                // добираем продолжение сообщения, если javac переносит строки (редко, но бывает)
+                while (i + 1 < lines.length) {
+                    String next = lines[i + 1];
+                    String nextTrim = next.trim();
+                    if (nextTrim.isEmpty()) {
+                        i++;
+                        break;
+                    }
+                    if (head.matcher(nextTrim).matches()) break;
+                    // пропускаем строки с исходником и ^, но если это текст — добавим в msg
+                    boolean looksLikeCaret = nextTrim.chars().allMatch(ch -> ch == '^');
+                    if (!looksLikeCaret && !nextTrim.equals(lines[i].trim())) {
+                        if (!nextTrim.startsWith(tmpFile.toString()) && !nextTrim.startsWith(file.toString())) {
+                            // исходная строка кода обычно содержит символы ;(){} и т.п. — не добавляем её
+                            if (!nextTrim.contains(";") && !nextTrim.contains("{") && !nextTrim.contains("}")) {
+                                msg = msg + " " + nextTrim;
+                            }
+                        }
+                    }
+                    i++;
+                }
+                result.add(new Problem(file, ln, kind, msg));
+            }
+        } catch (Exception ignored) {
+        }
+        return result;
+    }
+
+    private static String joinPaths(List<Path> paths) {
+        String sep = java.io.File.pathSeparator;
+        StringBuilder sb = new StringBuilder();
+        for (Path p : paths) {
+            if (p == null) continue;
+            if (sb.length() > 0) sb.append(sep);
+            sb.append(p.toString());
+        }
+        return sb.toString();
+    }
+
+    private static int safeParseInt(String s) {
+        try { return Integer.parseInt(s); } catch (Exception e) { return -1; }
     }
 
     private BorderPane wrapEditor(CodeArea editor) {
@@ -1591,7 +2759,16 @@ public class IdeController {
     private void applyHighlighting(CodeArea area) {
         if (area == null) return;
         String text = area.getText();
-        area.setStyleSpans(0, computeHighlighting(text));
+        // Пробуем применить также подсветку ошибок/предупреждений для открытого файла
+        Path file = null;
+        Tab tab = editorTabs != null ? editorTabs.getSelectionModel().getSelectedItem() : null;
+        if (tab != null) {
+            EditorTabData data = (EditorTabData) tab.getUserData();
+            if (data != null && data.editor == area) {
+                file = data.path;
+            }
+        }
+        area.setStyleSpans(0, computeHighlightingWithProblems(text, file));
     }
 
     private static StyleSpans<Collection<String>> computeHighlighting(String text) {
@@ -1617,6 +2794,79 @@ public class IdeController {
         }
         spans.add(Collections.emptyList(), text.length() - lastEnd);
         return spans.create();
+    }
+
+    private StyleSpans<Collection<String>> computeHighlightingWithProblems(String text, Path file) {
+        StyleSpans<Collection<String>> syntax = computeHighlighting(text);
+        if (file == null) return syntax;
+        List<Problem> probs = problemsByFile.get(file);
+        if (probs == null || probs.isEmpty()) return syntax;
+
+        Set<Integer> errLines = new HashSet<>();
+        Set<Integer> warnLines = new HashSet<>();
+        for (Problem p : probs) {
+            if (p.line <= 0) continue;
+            if ("error".equalsIgnoreCase(p.kind)) errLines.add(p.line);
+            else if ("warning".equalsIgnoreCase(p.kind)) warnLines.add(p.line);
+        }
+        if (errLines.isEmpty() && warnLines.isEmpty()) return syntax;
+
+        StyleSpans<Collection<String>> overlay = buildLineOverlaySpans(text, errLines, warnLines);
+        return mergeStyleSpans(syntax, overlay);
+    }
+
+    private static StyleSpans<Collection<String>> buildLineOverlaySpans(String text, Set<Integer> errLines, Set<Integer> warnLines) {
+        Map<Integer, String> lineStyle = new HashMap<>();
+        for (Integer l : warnLines) lineStyle.put(l, "warnLine");
+        for (Integer l : errLines) lineStyle.put(l, "errLine");
+
+        StyleSpansBuilder<Collection<String>> spans = new StyleSpansBuilder<>();
+        int idx = 0;
+        int line = 1;
+        int lineStart = 0;
+        while (idx <= text.length()) {
+            boolean isEnd = idx == text.length();
+            char c = isEnd ? '\n' : text.charAt(idx);
+            if (c == '\n' || isEnd) {
+                int lineEnd = idx;
+                int len = Math.max(0, lineEnd - lineStart);
+                String ls = lineStyle.get(line);
+                if (len > 0) spans.add(ls == null ? Collections.emptyList() : Collections.singleton(ls), len);
+                if (!isEnd) spans.add(Collections.emptyList(), 1);
+                line++;
+                lineStart = idx + 1;
+            }
+            idx++;
+        }
+        return spans.create();
+    }
+
+    private static StyleSpans<Collection<String>> mergeStyleSpans(
+            StyleSpans<Collection<String>> a,
+            StyleSpans<Collection<String>> b
+    ) {
+        var itA = a.iterator();
+        var itB = b.iterator();
+        var sa = itA.hasNext() ? itA.next() : null;
+        var sb = itB.hasNext() ? itB.next() : null;
+        int ra = sa != null ? sa.getLength() : 0;
+        int rb = sb != null ? sb.getLength() : 0;
+
+        StyleSpansBuilder<Collection<String>> out = new StyleSpansBuilder<>();
+        while (sa != null && sb != null) {
+            int len = Math.min(ra, rb);
+            List<String> merged = new ArrayList<>(sa.getStyle());
+            for (String s : sb.getStyle()) {
+                if (!merged.contains(s)) merged.add(s);
+            }
+            out.add(merged, len);
+
+            ra -= len;
+            rb -= len;
+            if (ra == 0) { sa = itA.hasNext() ? itA.next() : null; ra = sa != null ? sa.getLength() : 0; }
+            if (rb == 0) { sb = itB.hasNext() ? itB.next() : null; rb = sb != null ? sb.getLength() : 0; }
+        }
+        return out.create();
     }
 
     private void scheduleAutoComplete(CodeArea area) {
@@ -1656,6 +2906,13 @@ public class IdeController {
         for (String kw : JAVA_KEYWORDS) {
             if (kw.toLowerCase().startsWith(prefix.toLowerCase())) {
                 suggestions.add(new CompletionItem(kw, CompletionItemType.KEYWORD, kw));
+            }
+        }
+
+        // Слова из текущего файла (локальные идентификаторы)
+        if (!prefix.isEmpty()) {
+            for (String w : extractWordsForCompletion(area.getText(), prefix, 60)) {
+                suggestions.add(new CompletionItem(w, CompletionItemType.VARIABLE, w));
             }
         }
         
@@ -1757,6 +3014,23 @@ public class IdeController {
                 case VARIABLE -> VARIABLE;
             };
         }
+    }
+
+    private static List<String> extractWordsForCompletion(String text, String prefix, int limit) {
+        if (text == null || prefix == null || prefix.isEmpty()) return List.of();
+        String p = prefix.toLowerCase();
+        Set<String> out = new HashSet<>();
+        Matcher m = Pattern.compile("\\b[A-Za-z_$][A-Za-z\\d_$]{2,}\\b").matcher(text);
+        while (m.find()) {
+            String w = m.group();
+            if (w == null) continue;
+            if (!w.toLowerCase().startsWith(p)) continue;
+            out.add(w);
+            if (out.size() >= limit) break;
+        }
+        List<String> list = new ArrayList<>(out);
+        list.sort(String::compareToIgnoreCase);
+        return list;
     }
 
     private static String currentWordPrefix(CodeArea area) {
@@ -2081,6 +3355,115 @@ public class IdeController {
     private enum RunTargetType {
         CURRENT_FILE,
         MAIN_CLASS
+    }
+    
+    private void startFileWatcher() {
+        stopFileWatcher();
+        if (projectRoot == null) return;
+        
+        try {
+            fileWatcher = FileSystems.getDefault().newWatchService();
+            registerDirectory(projectRoot);
+            
+            fileWatcherThread = new Thread(() -> {
+                try {
+                    while (!Thread.currentThread().isInterrupted()) {
+                        WatchKey key = fileWatcher.take();
+                        if (key == null) continue;
+                        
+                        boolean shouldRefresh = false;
+                        for (WatchEvent<?> event : key.pollEvents()) {
+                            WatchEvent.Kind<?> kind = event.kind();
+                            if (kind == StandardWatchEventKinds.OVERFLOW) continue;
+                            
+                            @SuppressWarnings("unchecked")
+                            WatchEvent<Path> ev = (WatchEvent<Path>) event;
+                            Path path = ev.context();
+                            Path fullPath = ((Path) key.watchable()).resolve(path);
+                            
+                            if (shouldHidePath(fullPath)) continue;
+                            
+                            if (kind == StandardWatchEventKinds.ENTRY_CREATE || 
+                                kind == StandardWatchEventKinds.ENTRY_DELETE ||
+                                kind == StandardWatchEventKinds.ENTRY_MODIFY) {
+                                shouldRefresh = true;
+                                
+                                if (kind == StandardWatchEventKinds.ENTRY_CREATE && Files.isDirectory(fullPath)) {
+                                    registerDirectory(fullPath);
+                                }
+                            }
+                        }
+                        
+                        if (shouldRefresh) {
+                            Platform.runLater(() -> {
+                                if (projectRoot != null) {
+                                    scheduleTreeRefresh();
+                                }
+                            });
+                        }
+                        
+                        boolean valid = key.reset();
+                        if (!valid) break;
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    Platform.runLater(() -> logToConsole("File watcher error: " + e.getMessage()));
+                }
+            }, "file-watcher");
+            fileWatcherThread.setDaemon(true);
+            fileWatcherThread.start();
+        } catch (Exception e) {
+            logToConsole("Failed to start file watcher: " + e.getMessage());
+        }
+    }
+    
+    private void registerDirectory(Path dir) {
+        if (dir == null || !Files.isDirectory(dir)) return;
+        if (shouldHidePath(dir)) return;
+        
+        try {
+            dir.register(fileWatcher, 
+                StandardWatchEventKinds.ENTRY_CREATE,
+                StandardWatchEventKinds.ENTRY_DELETE,
+                StandardWatchEventKinds.ENTRY_MODIFY);
+            
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+                for (Path child : stream) {
+                    if (Files.isDirectory(child) && !shouldHidePath(child)) {
+                        registerDirectory(child);
+                    }
+                }
+            }
+        } catch (IOException ignored) {
+        }
+    }
+    
+    private void stopFileWatcher() {
+        if (fileWatcherThread != null) {
+            fileWatcherThread.interrupt();
+            fileWatcherThread = null;
+        }
+        if (fileWatcher != null) {
+            try {
+                fileWatcher.close();
+            } catch (IOException ignored) {
+            }
+            fileWatcher = null;
+        }
+    }
+    
+    private void scheduleTreeRefresh() {
+        if (treeRefreshTimer == null) {
+            treeRefreshTimer = new javafx.animation.PauseTransition(javafx.util.Duration.millis(300));
+            treeRefreshTimer.setOnFinished(e -> {
+                if (projectRoot != null) {
+                    refreshTreeIfUnderRoot(projectRoot);
+                }
+            });
+        }
+        treeRefreshTimer.stop();
+        treeRefreshTimer.play();
     }
 }
 
